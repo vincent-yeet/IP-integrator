@@ -1,6 +1,6 @@
 ---
 name: IP Integrator
-description: This skill is used to integrate existing IPs and write glue logic based on user given high level specifications. Trigger when /integrate is used.
+description: This skill is used to integrate existing IPs and write glue logic based on user given high level specifications. Trigger when /ip-integrator is used.
 ---
 
 # IP Integrator

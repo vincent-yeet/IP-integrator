@@ -1,0 +1,124 @@
+# =============================================================================
+# IP Integrator — spec for the IP Integration Agent Skill
+#
+# Recreated from CVDP agentic datapoint: cvdp_agentic_systolic_array_0001 (cid005)
+# Task: build a 2x2 weight-stationary systolic array for matrix-multiply
+#       acceleration out of four pre-existing weight_stationary_pe PEs.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# System overview
+# -----------------------------------------------------------------------------
+intent: >
+  Implement a 2x2 weight-stationary systolic array for matrix-multiplication
+  acceleration by integrating four identical `weight_stationary_pe` processing
+  elements (PEs) into a top-level `systolic_array` module. Each PE performs a
+  multiply-accumulate (MAC) and passes its activation to the neighbouring PE to
+  the east and its partial sum to the neighbouring PE to the south, in a
+  wavefront manner. The array computes:
+
+      y0 = (x0 * w00) + (x1 * w10)
+      y1 = (x0 * w01) + (x1 * w11)
+
+  Weights (w00, w01, w10, w11) are loaded and held stationary in each PE while
+  `load_weights` is high. Activations x0 (row 0) and x1 (row 1) are streamed in
+  and start on `start`. Partial sums flow top-to-bottom; the top row's psum_in
+  is tied to zero and the bottom row's psum_out produces the results.
+
+  The glue you must write is the pipeline/latency control: a small controller
+  that, on `start` (and not during weight loading), staggers the per-row `valid`
+  strobes so the top-row partial sum reaches the bottom row on the same cycle
+  its activation arrives, captures the bottom-row results into REGISTERED
+  outputs y0/y1, and asserts `done` once the computation cycles complete
+  (holding it until `start` is deasserted). Keep latency low. Each PE truncates
+  its MAC to DATA_WIDTH (8) bits, so y0/y1 are the 8-bit truncated column sums.
+
+# -----------------------------------------------------------------------------
+# IPs — the submodule to be integrated (instantiated 4x)
+# -----------------------------------------------------------------------------
+ips:
+  - name: weight_stationary_pe
+    interface: |
+      module weight_stationary_pe #(
+        parameter DATA_WIDTH = 8   // Bit width of weights and activations
+      )
+      (
+        input  wire                  clk,
+        input  wire                  reset,
+        input  wire                  load_weight,  // latch `weight` into local reg when high
+        input  wire                  valid,        // update outputs only when high
+
+        input  wire [DATA_WIDTH-1:0] input_in,     // activation from west PE / memory
+        input  wire [DATA_WIDTH-1:0] weight,       // new weight to load
+        input  wire [DATA_WIDTH-1:0] psum_in,      // partial sum from north PE
+
+        output reg  [DATA_WIDTH-1:0] input_out,    // activation passed east
+        output reg  [DATA_WIDTH-1:0] psum_out      // psum passed south: psum_in + input_in*weight_reg
+      );
+    description: >
+      Weight-stationary MAC processing element. Loads and holds a weight, and on
+      each valid cycle computes psum_out = psum_in + (input_in * weight_reg)
+      (truncated to DATA_WIDTH bits) while forwarding input_in to input_out.
+      Synchronous, active-high async reset.
+    path: submodules/weight_stationary_pe.sv
+    clock: clk
+    reset: reset
+
+# -----------------------------------------------------------------------------
+# Interconnects
+# -----------------------------------------------------------------------------
+interconnects:
+  # systolic — 2x2 mesh of PEs, activations flow west->east, psums flow
+  # north->south, weights stationary. Instances named pe{r}{c}.
+  - name: mac_array
+    topology: systolic
+    module: weight_stationary_pe
+    dims: {rows: 2, cols: 2}
+    instance_pattern: "pe{r}{c}"
+    mesh_shape: grid
+    neighbor_connections:
+      - {port: input_out, to: {instance: "pe{r}{c+1}", port: input_in},  when: "c < cols-1"}
+      - {port: psum_out,  to: {instance: "pe{r+1}{c}", port: psum_in},   when: "r < rows-1"}
+    dataflow:
+      direction: [west_to_east, north_to_south]
+      stationary: weight
+    per_instance:
+      # Each PE holds one stationary weight w{r}{c}, gated by load_weights,
+      # and is strobed by its row's valid signal from the controller.
+      - {port: weight,      connect: external, name: "w{r}{c}"}
+      - {port: load_weight, connect: control,  signal: load_weights}
+      - {port: valid,       connect: control,  signal: "row{r}_valid"}
+      - {port: input_in,    when: "c == 0",    connect: control, signal: "row{r}_in"}
+    boundary:
+      - {port: psum_in,  when: "r == 0",       connect: const,    value: 0}
+      - {port: psum_out, when: "r == rows-1",  connect: external, name: "y{c}"}
+    flow: direct
+
+# -----------------------------------------------------------------------------
+# External Ports — top-level I/O (matches systolic_array_tb.sv)
+# -----------------------------------------------------------------------------
+external_ports:
+  - {name: clk,          dir: in,  width: 1}
+  - {name: reset,        dir: in,  width: 1}   # active-high async reset
+  - {name: load_weights, dir: in,  width: 1}   # hold high 1+ cycle to latch weights
+  - {name: start,        dir: in,  width: 1}   # begin a computation
+
+  - {name: w00,          dir: in,  width: 8}
+  - {name: w01,          dir: in,  width: 8}
+  - {name: w10,          dir: in,  width: 8}
+  - {name: w11,          dir: in,  width: 8}
+
+  - {name: x0,           dir: in,  width: 8}   # row 0 activation
+  - {name: x1,           dir: in,  width: 8}   # row 1 activation
+
+  - {name: y0,           dir: out, width: 8}   # registered result, col 0
+  - {name: y1,           dir: out, width: 8}   # registered result, col 1
+  - {name: done,         dir: out, width: 1}   # high once results are valid
+
+# -----------------------------------------------------------------------------
+# Simulation — existing SV testbench drives 7 vectors and prints PASS/FAIL
+# -----------------------------------------------------------------------------
+sim:
+  tool: icarus
+  existing_tb: submodules/systolic_array_tb.sv
+  top: systolic_array_tb
