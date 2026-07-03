@@ -1,0 +1,164 @@
+# =============================================================================
+# IP Integrator — template spec
+# Use this to describe your desired spec for the IP Integration Agent Skill
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# System overview - provide a high level description of how you want the system
+# to be composed
+# -----------------------------------------------------------------------------
+intent: > 
+  Text goes here
+
+# -----------------------------------------------------------------------------
+# IPs — List the submodules that need to be integrated to complete the design
+# -----------------------------------------------------------------------------
+ips:
+  - name: ip1
+    interface: |
+      module dummy_module (
+        input  wire        clk,
+        input  wire        rst_n,
+        output wire [31:0] data_out,
+        output wire        data_ready // High when module has valid data
+      );
+    description: >
+      Briefly describe what the module does
+    path: /path/to/ip1
+    clock: sys_clock
+    reset: sys_rst_n
+        
+  - name: ip2
+    interface: |
+      module dummy_module (
+        input  wire        clk,
+        input  wire        rst_n,
+        output wire [31:0] data_out,
+        output wire        data_ready // High when module has valid data
+      );
+    description: >
+      Briefly describe what the module does
+    path: /path/to/ip2
+    clock: sys_clock
+    reset: sys_rst_n
+
+
+#-----------------------------------------------------------------------------
+# Interconnects - Separated by topology. Select the appropriate topology and
+# then fill in the required fields for that topology.
+#-----------------------------------------------------------------------------
+interconnects:
+  # shared_bus — N requesters, one or more resources, one transaction at a time
+  - name: sram_arb
+    topology: shared_bus
+    masters: [sensor0, proc0]
+    slaves: [sram_ctrl]
+    arbitration: fixed_priority        # fixed_priority | round_robin
+    priority_order: [proc0, sensor0]
+    flow: backpressure
+ 
+  - name: periph_bus
+    topology: shared_bus
+    masters: [cpu0, dma0]
+    slaves:
+      - {name: uart0, base: 0x1000, size: 0x100}
+      - {name: gpio0, base: 0x2000, size: 0x100}
+    arbitration: fixed_priority
+    priority_order: [cpu0, dma0]
+    flow: backpressure
+ 
+  # crossbar — full M x N concurrent connectivity, per-slave arbitration
+  - name: axi_xbar0
+    topology: crossbar
+    masters: [cpu0, dma0]
+    slaves:
+      - {name: mem0, base: 0x10000, size: 0x10000}
+      - {name: mem1, base: 0x20000, size: 0x10000}
+    arbitration: fixed_priority        # applied independently at each slave
+    flow: backpressure
+ 
+  # mesh_2d — grid of identical nodes, neighbor-only links, bounded edges
+  - name: filter_mesh
+    topology: mesh_2d
+    module: fir_node
+    dims: {rows: 2, cols: 2}
+    instance_pattern: "fir_{r}_{c}"
+    mesh_shape: grid                 # grid | ring | torus
+    neighbor_connections:
+      - {port: east_out,  to: {instance: "fir_{r}_{c+1}", port: west_in},  when: "c < cols-1"}
+      - {port: south_out, to: {instance: "fir_{r+1}_{c}", port: north_in}, when: "r < rows-1"}
+    boundary:
+      - {port: west_in,  when: "c == 0",       connect: external, name: "in_row{r}"}
+      - {port: north_in, when: "r == 0",       connect: external, name: "in_col{c}"}
+      - {port: east_out, when: "c == cols-1",  connect: external, name: "out_row{r}"}
+    flow: backpressure
+ 
+  # systolic — mesh_2d plus a dataflow direction/stationary-operand discipline
+  - name: mac_array
+    topology: systolic
+    module: pe_generic
+    dims: {rows: 4, cols: 4}
+    instance_pattern: "pe_{r}_{c}"
+    mesh_shape: grid
+    neighbor_connections:
+      - {port: east_out,  to: {instance: "pe_{r}_{c+1}", port: west_in},  when: "c < cols-1"}
+      - {port: south_out, to: {instance: "pe_{r+1}_{c}", port: north_in}, when: "r < rows-1"}
+    dataflow:
+      direction: [west_to_east, north_to_south]
+      stationary: weight            # weight | output | input
+    boundary:
+      - {port: west_in,   when: "c == 0",      connect: external, name: "operand_row{r}"}
+      - {port: north_in,  when: "r == 0",       connect: external, name: "weight_col{c}"}
+      - {port: east_out,  when: "c == cols-1",  connect: external, name: "result_row{r}"}
+    flow: backpressure
+ 
+  # tree — hierarchical parent/child, log-depth (reduction or broadcast)
+  - name: sum_tree
+    topology: tree
+    module: adder_node
+    depth: 3
+    fanout: 2
+    tree_direction: reduce           # reduce | broadcast | bidirectional
+    leaf_ports: {name: in, count: 8}
+    root_ports: {name: sum_out}
+    flow: direct
+ 
+  # star — one hub, N spokes, spokes don't talk to each other
+  - name: irq_hub
+    topology: star
+    hub: irq_controller
+    spokes: [uart0, gpio0, sensor0]
+    hub_port_pattern: "irq_in_{n}"
+    flow: direct
+ 
+  # daisy_chain — linear chain, each node passes to the next
+  - name: scan_chain0
+    topology: daisy_chain
+    module: scan_cell
+    count: 8
+    instance_pattern: "scan_{n}"
+    chain_port: {out: scan_out, in: scan_in}
+    terminator: {head: external, tail: external}
+    flow: direct
+ 
+  # broadcast — one source fans out identically to all sinks, no arbitration
+  - name: clk_dist
+    topology: broadcast
+    source: clk_gen0
+    sinks: [dma0, proc0, mac_array]
+    flow: direct
+
+# -----------------------------------------------------------------------------
+# External Ports - Top level I/O signals
+# -----------------------------------------------------------------------------
+external_ports:
+  - {name: sys_clk,   dir: in, width: 1}
+  - {name: sys_rst_n, dir: in, width: 1}
+
+# -----------------------------------------------------------------------------
+# Simulation - Provide existing simulation tools for the agent to simulate and
+# iterate on its code
+# -----------------------------------------------------------------------------
+sim:
+  tool: verilator
+  existing_tb: /path/to/tb.sv
