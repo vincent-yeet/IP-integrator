@@ -7,6 +7,7 @@ Prompts should be formatted based on the provided template.yaml.
 
 Finished first draft SKILL.md and prompt formatting template.
 To do: Add examples to SKILL.md, test the skills file, and alter the files as needed.
+
 Next steps: 
 - Add performance metrics
 - Add support for DSE/optimization
